@@ -140,7 +140,6 @@ impl P2PNetwork {
                                     stdout().flush().unwrap();
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
-                                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                                     match reader.read_line(&mut buffer) {
                                         Ok(bytes_read) if bytes_read > 0 => {
                                             println!("Received response from {}: {}", peer_addr, buffer.trim());
@@ -212,7 +211,6 @@ impl P2PNetwork {
             stdout().flush().unwrap();
         }
 
-        // Keep connection open for messages
         while let Ok(bytes_read) = reader.read_line(&mut buffer) {
             if bytes_read == 0 {
                 break;
