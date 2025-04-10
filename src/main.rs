@@ -192,19 +192,19 @@ impl P2PNetwork {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.insert(peer_addr.clone());
             if peer_ip == expected_ip {
+                println!("Incoming connection from peer IP: {}", peer_addr);
+                stdout().flush().unwrap();
                 let (lock, cvar) = &*connected;
                 let mut connected_guard = lock.lock().unwrap();
                 *connected_guard = true;
                 cvar.notify_all();
-                println!("Incoming connection from peer IP: {}", peer_addr);
-                stdout().flush().unwrap();
             }
         }
         
         let mut reader = BufReader::new(&stream);
         let mut buffer = String::new();
         
-        let message = format!("HELLO from {}", stream.local_addr().unwrap());
+        let message = format!("HELLO from {}", expected_peer); // Use public address
         if let Ok(mut writer) = stream.try_clone() {
             writer.write_all(message.as_bytes()).unwrap();
             writer.flush().unwrap();
