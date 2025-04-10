@@ -1,6 +1,7 @@
 [package]
 name = "north"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+igd = "0.12"  # Use a specific version for stability

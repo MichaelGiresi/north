@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::time::Duration;
 use std::collections::HashSet;
+use igd::{PortMappingProtocol, SearchOptions}; // Removed unused Gateway
 
 struct P2PNetwork {
     peers: Arc<Mutex<HashSet<String>>>,
@@ -29,7 +30,22 @@ impl P2PNetwork {
     }
 
     fn start(&self) -> Result<(thread::JoinHandle<()>, thread::JoinHandle<()>), String> {
-        let bind_addr = format!("0.0.0.0:{}", self.local_addr.split(':').last().unwrap());
+        let port = self.local_addr.split(':').last().unwrap().parse::<u16>()
+            .map_err(|_| "Invalid port number".to_string())?;
+        let bind_addr = format!("0.0.0.0:{}", port);
+
+        // Attempt UPnP port forwarding
+        match igd::search_gateway(SearchOptions::default()) {
+            Ok(gateway) => {
+                let local_addr = "0.0.0.0".parse().unwrap();
+                match gateway.add_port(PortMappingProtocol::TCP, port, local_addr, 3600, "P2P Network") {
+                    Ok(()) => println!("UPnP port forwarding set up for port {}", port),
+                    Err(e) => println!("Failed to set up UPnP: {}. Manual port forwarding may be required.", e),
+                }
+            }
+            Err(e) => println!("UPnP gateway not found: {}. Manual port forwarding may be required.", e),
+        }
+
         let listener = TcpListener::bind(&bind_addr)
             .map_err(|e| format!("Failed to bind to {}: {}", bind_addr, e))?;
         println!("Node started at {}", self.local_addr);
@@ -38,7 +54,6 @@ impl P2PNetwork {
         let running = Arc::clone(&self.running);
         let connected = Arc::clone(&self.connected);
 
-        // Listener thread for incoming connections
         let listener_handle = thread::spawn(move || {
             for stream in listener.incoming() {
                 if !*running.lock().unwrap() {
@@ -52,15 +67,12 @@ impl P2PNetwork {
                             Self::handle_connection(stream, peers_clone, connected_clone);
                         });
                     }
-                    Err(e) => {
-                        println!("Error accepting connection: {}", e);
-                    }
+                    Err(e) => println!("Error accepting connection: {}", e),
                 }
             }
             println!("Listener shut down");
         });
 
-        // Peer discovery thread
         let discovery_peers = Arc::clone(&self.peers);
         let discovery_potential = Arc::clone(&self.potential_peers);
         let discovery_running = Arc::clone(&self.running);
@@ -76,17 +88,22 @@ impl P2PNetwork {
                             Ok(mut stream) => {
                                 let message = format!("HELLO from {}", local_addr);
                                 if stream.write_all(message.as_bytes()).is_ok() {
-                                    discovery_peers.lock().unwrap().insert(peer_addr.clone());
-                                    println!("Connected to peer: {}", peer_addr);
-                                    let (lock, cvar) = &*discovery_connected;
-                                    let mut connected = lock.lock().unwrap();
-                                    *connected = true;
-                                    cvar.notify_all();
+                                    // Verify peer response
+                                    let mut reader = BufReader::new(&stream);
+                                    let mut buffer = String::new();
+                                    if reader.read_line(&mut buffer).is_ok() && buffer.trim().starts_with("HELLO") {
+                                        discovery_peers.lock().unwrap().insert(peer_addr.clone());
+                                        println!("Connected to peer: {}", peer_addr);
+                                        let (lock, cvar) = &*discovery_connected;
+                                        let mut connected = lock.lock().unwrap();
+                                        *connected = true;
+                                        cvar.notify_all();
+                                    } else {
+                                        println!("Peer {} responded but isn't a valid node", peer_addr);
+                                    }
                                 }
                             }
-                            Err(_) => {
-                                // Silent retry
-                            }
+                            Err(_) => {} // Silent retry on connection failure
                         }
                     }
                 }
@@ -109,9 +126,15 @@ impl P2PNetwork {
             cvar.notify_all();
         }
         
-        let mut reader = BufReader::new(stream);
+        let mut reader = BufReader::new(&stream);
         let mut buffer = String::new();
         
+        // Send HELLO message to incoming connection
+        let message = format!("HELLO from {}", stream.local_addr().unwrap());
+        if let Ok(mut writer) = stream.try_clone() {
+            writer.write_all(message.as_bytes()).unwrap();
+        }
+
         while let Ok(bytes_read) = reader.read_line(&mut buffer) {
             if bytes_read == 0 {
                 break;
@@ -160,10 +183,19 @@ fn print_prompt() {
 
 fn main() {
     println!("Enter your public address (public_IP:port, e.g., 47.17.52.8:8000):");
-    println!("Note: You must set up port forwarding on your router!");
     let mut local_addr = String::new();
     io::stdin().read_line(&mut local_addr).expect("Failed to read address");
     let local_addr = local_addr.trim();
+
+    if !local_addr.contains(':') {
+        println!("Error: Address must include a port (e.g., 82.25.86.57:8000)");
+        return;
+    }
+    let parts: Vec<&str> = local_addr.split(':').collect();
+    if parts.len() != 2 || parts[1].parse::<u16>().is_err() {
+        println!("Error: Invalid format or port number. Use IP:port (e.g., 82.25.86.57:8000)");
+        return;
+    }
 
     println!("Enter initial peer's public address (public_IP:port, e.g., 174.193.21.86:8000):");
     let mut peer_addr = String::new();
@@ -175,6 +207,7 @@ fn main() {
         Ok(handles) => handles,
         Err(e) => {
             println!("{}", e);
+            println!("If UPnP failed, ensure port forwarding is set up manually on your router.");
             return;
         }
     };
