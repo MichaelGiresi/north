@@ -108,7 +108,8 @@ impl P2PNetwork {
                 let potential = discovery_potential.lock().unwrap().clone();
                 for peer_addr in potential {
                     if !discovery_peers.lock().unwrap().contains(&peer_addr) {
-                        match TcpStream::connect(&peer_addr) {
+                        println!("Attempting to connect to peer {}", peer_addr);
+                        match TcpStream::connect_timeout(&peer_addr.parse().unwrap(), Duration::from_secs(5)) {
                             Ok(mut stream) => {
                                 let message = format!("HELLO from {}", local_addr);
                                 if stream.write_all(message.as_bytes()).is_ok() {
@@ -131,7 +132,7 @@ impl P2PNetwork {
                                     }
                                 }
                             }
-                            Err(_) => {} // Silent retry
+                            Err(e) => println!("Failed to connect to peer {}: {}", peer_addr, e),
                         }
                     }
                 }
@@ -175,7 +176,16 @@ impl P2PNetwork {
             }
             buffer.clear();
         }
-        peers.lock().unwrap().remove(&peer_addr);
+        {
+            let mut peers_guard = peers.lock().unwrap();
+            peers_guard.remove(&peer_addr);
+            if peer_addr == expected_peer {
+                let (lock, cvar) = &*connected;
+                let mut connected_guard = lock.lock().unwrap();
+                *connected_guard = false;  // Reset on disconnect
+                cvar.notify_all();
+            }
+        }
         println!("Disconnected from {}", peer_addr);
     }
 
