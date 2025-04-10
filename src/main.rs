@@ -7,25 +7,28 @@ use std::collections::HashSet;
 use std::env;
 use igd::{PortMappingProtocol, SearchOptions};
 use if_addrs;
+use hostname;
 
 struct P2PNetwork {
     peers: Arc<Mutex<HashSet<String>>>,
     potential_peers: Arc<Mutex<HashSet<String>>>,
     local_addr: String,
+    peer_addr: String,  // Add peer_addr to track the intended peer
     running: Arc<Mutex<bool>>,
     connected: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl P2PNetwork {
-    fn new(local_addr: &str, initial_peer: &str) -> Self {
+    fn new(local_addr: &str, peer_addr: &str) -> Self {
         let mut potential_peers = HashSet::new();
-        if !initial_peer.is_empty() {
-            potential_peers.insert(initial_peer.to_string());
+        if !peer_addr.is_empty() {
+            potential_peers.insert(peer_addr.to_string());
         }
         P2PNetwork {
             peers: Arc::new(Mutex::new(HashSet::new())),
             potential_peers: Arc::new(Mutex::new(potential_peers)),
             local_addr: local_addr.to_string(),
+            peer_addr: peer_addr.to_string(),  // Store peer_addr
             running: Arc::new(Mutex::new(true)),
             connected: Arc::new((Mutex::new(false), Condvar::new())),
         }
@@ -36,14 +39,12 @@ impl P2PNetwork {
             .map_err(|_| "Invalid port number".to_string())?;
         let bind_addr = format!("0.0.0.0:{}", port);
 
-        // Get the local IP address for UPnP
         let local_ip = get_local_ip().unwrap_or_else(|| {
             println!("Failed to determine local IP, falling back to 0.0.0.0");
             Ipv4Addr::new(0, 0, 0, 0)
         });
         println!("Using local IP for UPnP: {}", local_ip);
 
-        // Attempt UPnP port forwarding
         match igd::search_gateway(SearchOptions::default()) {
             Ok(gateway) => {
                 let local_addr = SocketAddrV4::new(local_ip, port);
@@ -66,6 +67,7 @@ impl P2PNetwork {
         let peers = Arc::clone(&self.peers);
         let running = Arc::clone(&self.running);
         let connected = Arc::clone(&self.connected);
+        let peer_addr = self.peer_addr.clone();
 
         let listener_handle = thread::spawn(move || {
             for stream in listener.incoming() {
@@ -76,8 +78,9 @@ impl P2PNetwork {
                     Ok(stream) => {
                         let peers_clone = Arc::clone(&peers);
                         let connected_clone = Arc::clone(&connected);
+                        let peer_addr_clone = peer_addr.clone();
                         thread::spawn(move || {
-                            Self::handle_connection(stream, peers_clone, connected_clone);
+                            Self::handle_connection(stream, peers_clone, connected_clone, &peer_addr_clone);
                         });
                     }
                     Err(e) => println!("Error accepting connection: {}", e),
@@ -91,6 +94,7 @@ impl P2PNetwork {
         let discovery_running = Arc::clone(&self.running);
         let discovery_connected = Arc::clone(&self.connected);
         let local_addr = self.local_addr.clone();
+        let peer_addr = self.peer_addr.clone();
 
         let discovery_handle = thread::spawn(move || {
             while *discovery_running.lock().unwrap() {
@@ -108,7 +112,7 @@ impl P2PNetwork {
                                         println!("Connected to peer: {}", peer_addr);
                                         let (lock, cvar) = &*discovery_connected;
                                         let mut connected = lock.lock().unwrap();
-                                        *connected = true;
+                                        *connected = true;  // Only set true for the intended peer
                                         cvar.notify_all();
                                     } else {
                                         println!("Peer {} responded but isn't a valid node", peer_addr);
@@ -127,15 +131,17 @@ impl P2PNetwork {
         Ok((listener_handle, discovery_handle))
     }
 
-    fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, connected: Arc<(Mutex<bool>, Condvar)>) {
+    fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, connected: Arc<(Mutex<bool>, Condvar)>, expected_peer: &str) {
         let peer_addr = stream.peer_addr().unwrap().to_string();
         {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.insert(peer_addr.clone());
-            let (lock, cvar) = &*connected;
-            let mut connected_guard = lock.lock().unwrap();
-            *connected_guard = true;
-            cvar.notify_all();
+            if peer_addr == expected_peer {
+                let (lock, cvar) = &*connected;
+                let mut connected_guard = lock.lock().unwrap();
+                *connected_guard = true;  // Only set true if it's the expected peer
+                cvar.notify_all();
+            }
         }
         
         let mut reader = BufReader::new(&stream);
@@ -181,9 +187,10 @@ impl P2PNetwork {
         let (lock, cvar) = &*self.connected;
         let mut connected = lock.lock().unwrap();
         while !*connected {
-            println!("Waiting for a peer to connect...");
+            println!("Waiting for peer {} to connect...", self.peer_addr);
             connected = cvar.wait(connected).unwrap();
         }
+        println!("Peer {} connected!", self.peer_addr);
     }
 }
 
@@ -203,24 +210,55 @@ fn get_local_ip() -> Option<Ipv4Addr> {
     None
 }
 
-const NODE_A: &str = "47.17.52.8:8000";  // Windows machine
-const NODE_B: &str = "82.25.86.57:8000"; // Server
+fn determine_node_config() -> (String, String) {
+    const NODE_A_PUBLIC: &str = "47.17.52.8";
+    const NODE_B_PUBLIC: &str = "82.25.86.57";
+    const PORT: u16 = 8000;
+
+    let local_ip = get_local_ip().unwrap_or_else(|| Ipv4Addr::new(0, 0, 0, 0));
+    println!("Detected local IP: {}", local_ip);
+
+    let args: Vec<String> = env::args().collect();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("node-a") => (
+            format!("{}:{}", NODE_A_PUBLIC, PORT),
+            format!("{}:{}", NODE_B_PUBLIC, PORT),
+        ),
+        Some("node-b") => (
+            format!("{}:{}", NODE_B_PUBLIC, PORT),
+            format!("{}:{}", NODE_A_PUBLIC, PORT),
+        ),
+        _ => {
+            if let Ok(hostname) = hostname::get() {
+                if hostname.to_string_lossy().contains("srv787206") {
+                    println!("Detected server, running as node-b");
+                    (
+                        format!("{}:{}", NODE_B_PUBLIC, PORT),
+                        format!("{}:{}", NODE_A_PUBLIC, PORT),
+                    )
+                } else {
+                    println!("Assuming node-a (Windows)");
+                    (
+                        format!("{}:{}", NODE_A_PUBLIC, PORT),
+                        format!("{}:{}", NODE_B_PUBLIC, PORT),
+                    )
+                }
+            } else {
+                println!("Could not determine hostname, defaulting to node-a");
+                (
+                    format!("{}:{}", NODE_A_PUBLIC, PORT),
+                    format!("{}:{}", NODE_B_PUBLIC, PORT),
+                )
+            }
+        }
+    }
+}
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let (local_addr, peer_addr) = match args.get(1).map(|s| s.as_str()) {
-        Some("node-a") => (NODE_A, NODE_B),
-        Some("node-b") => (NODE_B, NODE_A),
-        _ => {
-            println!("Usage: cargo run -- <node-a|node-b>");
-            println!("Defaulting to node-a ({}) with peer node-b ({}).", NODE_A, NODE_B);
-            (NODE_A, NODE_B)
-        }
-    };
-
+    let (local_addr, peer_addr) = determine_node_config();
     println!("Running as {} with peer {}", local_addr, peer_addr);
 
-    let network = P2PNetwork::new(local_addr, peer_addr);
+    let network = P2PNetwork::new(&local_addr, &peer_addr);
     let (listener_handle, discovery_handle) = match network.start() {
         Ok(handles) => handles,
         Err(e) => {
