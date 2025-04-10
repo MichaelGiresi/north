@@ -140,6 +140,7 @@ impl P2PNetwork {
                                     stdout().flush().unwrap();
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
+                                    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap(); // Increased timeout
                                     match reader.read_line(&mut buffer) {
                                         Ok(bytes_read) if bytes_read > 0 => {
                                             println!("Received response from {}: {}", peer_addr, buffer.trim());
@@ -241,7 +242,7 @@ impl P2PNetwork {
     fn send_message(&self, message: &str) {
         println!("Attempting to send message '{}' to {}", message, self.peer_addr);
         stdout().flush().unwrap();
-        match TcpStream::connect(&self.peer_addr) {
+        match TcpStream::connect_timeout(&self.peer_addr.parse().unwrap(), Duration::from_secs(5)) {
             Ok(mut stream) => {
                 println!("Connected to {} for sending message", self.peer_addr);
                 stdout().flush().unwrap();
