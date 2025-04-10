@@ -118,6 +118,12 @@ impl P2PNetwork {
 
         let discovery_handle = thread::spawn(move || {
             while *discovery_running.lock().unwrap() {
+                let connected = *discovery_connected.0.lock().unwrap();
+                if connected {
+                    println!("Peer {} already connected, stopping discovery attempts", peer_addr);
+                    stdout().flush().unwrap();
+                    break;
+                }
                 let potential = discovery_potential.lock().unwrap().clone();
                 for peer_addr in potential {
                     if !discovery_peers.lock().unwrap().contains(&peer_addr) {
@@ -180,12 +186,12 @@ impl P2PNetwork {
 
     fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, connected: Arc<(Mutex<bool>, Condvar)>, expected_peer: &str) {
         let peer_addr = stream.peer_addr().unwrap().to_string();
-        let peer_ip = peer_addr.split(':').next().unwrap(); // Extract IP only
+        let peer_ip = peer_addr.split(':').next().unwrap();
         let expected_ip = expected_peer.split(':').next().unwrap();
         {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.insert(peer_addr.clone());
-            if peer_ip == expected_ip {  // Match IP only
+            if peer_ip == expected_ip {
                 let (lock, cvar) = &*connected;
                 let mut connected_guard = lock.lock().unwrap();
                 *connected_guard = true;
