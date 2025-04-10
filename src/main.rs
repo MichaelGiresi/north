@@ -13,7 +13,7 @@ struct P2PNetwork {
     peers: Arc<Mutex<HashSet<String>>>,
     potential_peers: Arc<Mutex<HashSet<String>>>,
     local_addr: String,
-    peer_addr: String,  // Add peer_addr to track the intended peer
+    peer_addr: String,
     running: Arc<Mutex<bool>>,
     connected: Arc<(Mutex<bool>, Condvar)>,
 }
@@ -28,7 +28,7 @@ impl P2PNetwork {
             peers: Arc::new(Mutex::new(HashSet::new())),
             potential_peers: Arc::new(Mutex::new(potential_peers)),
             local_addr: local_addr.to_string(),
-            peer_addr: peer_addr.to_string(),  // Store peer_addr
+            peer_addr: peer_addr.to_string(),
             running: Arc::new(Mutex::new(true)),
             connected: Arc::new((Mutex::new(false), Condvar::new())),
         }
@@ -45,19 +45,24 @@ impl P2PNetwork {
         });
         println!("Using local IP for UPnP: {}", local_ip);
 
-        match igd::search_gateway(SearchOptions::default()) {
-            Ok(gateway) => {
-                let local_addr = SocketAddrV4::new(local_ip, port);
-                match gateway.get_external_ip() {
-                    Ok(external_ip) => println!("Requesting UPnP mapping: {} -> {}:{}", external_ip, local_ip, port),
-                    Err(e) => println!("Failed to get external IP: {}", e),
+        // Attempt UPnP only if it’s likely to work (e.g., not on a VPS)
+        if !self.local_addr.contains("srv787206") {  // Rough check for VPS
+            match igd::search_gateway(SearchOptions::default()) {
+                Ok(gateway) => {
+                    let local_addr = SocketAddrV4::new(local_ip, port);
+                    match gateway.get_external_ip() {
+                        Ok(external_ip) => println!("Requesting UPnP mapping: {} -> {}:{}", external_ip, local_ip, port),
+                        Err(e) => println!("Failed to get external IP: {}", e),
+                    }
+                    match gateway.add_port(PortMappingProtocol::TCP, port, local_addr, 3600, "P2P Network") {
+                        Ok(()) => println!("UPnP port forwarding set up for port {}", port),
+                        Err(e) => println!("Failed to set up UPnP: {}. Manual port forwarding may be required.", e),
+                    }
                 }
-                match gateway.add_port(PortMappingProtocol::TCP, port, local_addr, 3600, "P2P Network") {
-                    Ok(()) => println!("UPnP port forwarding set up for port {}", port),
-                    Err(e) => println!("Failed to set up UPnP: {}. Manual port forwarding may be required.", e),
-                }
+                Err(e) => println!("UPnP gateway not found: {}. Manual port forwarding may be required.", e),
             }
-            Err(e) => println!("UPnP gateway not found: {}. Manual port forwarding may be required.", e),
+        } else {
+            println!("Running on VPS, skipping UPnP. Ensure port forwarding is set up manually.");
         }
 
         let listener = TcpListener::bind(&bind_addr)
@@ -67,7 +72,7 @@ impl P2PNetwork {
         let peers = Arc::clone(&self.peers);
         let running = Arc::clone(&self.running);
         let connected = Arc::clone(&self.connected);
-        let peer_addr = self.peer_addr.clone();
+        let peer_addr = self.peer_addr.clone();  // Clone for listener thread
 
         let listener_handle = thread::spawn(move || {
             for stream in listener.incoming() {
@@ -112,7 +117,7 @@ impl P2PNetwork {
                                         println!("Connected to peer: {}", peer_addr);
                                         let (lock, cvar) = &*discovery_connected;
                                         let mut connected = lock.lock().unwrap();
-                                        *connected = true;  // Only set true for the intended peer
+                                        *connected = true;
                                         cvar.notify_all();
                                     } else {
                                         println!("Peer {} responded but isn't a valid node", peer_addr);
@@ -139,7 +144,7 @@ impl P2PNetwork {
             if peer_addr == expected_peer {
                 let (lock, cvar) = &*connected;
                 let mut connected_guard = lock.lock().unwrap();
-                *connected_guard = true;  // Only set true if it's the expected peer
+                *connected_guard = true;
                 cvar.notify_all();
             }
         }
