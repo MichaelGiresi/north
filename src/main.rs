@@ -125,12 +125,19 @@ impl P2PNetwork {
                         stdout().flush().unwrap();
                         match TcpStream::connect_timeout(&peer_addr.parse().unwrap(), Duration::from_secs(5)) {
                             Ok(mut stream) => {
+                                println!("Connection established to {}", peer_addr);
+                                stdout().flush().unwrap();
                                 let message = format!("HELLO from {}", local_addr);
                                 if stream.write_all(message.as_bytes()).is_ok() {
+                                    stream.flush().unwrap(); // Ensure message is sent
+                                    println!("Sent HELLO to {}", peer_addr);
+                                    stdout().flush().unwrap();
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
                                     match reader.read_line(&mut buffer) {
                                         Ok(bytes_read) if bytes_read > 0 => {
+                                            println!("Received response from {}: {}", peer_addr, buffer.trim());
+                                            stdout().flush().unwrap();
                                             if buffer.trim().starts_with("HELLO") {
                                                 discovery_peers.lock().unwrap().insert(peer_addr.clone());
                                                 println!("Successfully connected to peer: {}", peer_addr);
@@ -149,6 +156,9 @@ impl P2PNetwork {
                                             stdout().flush().unwrap();
                                         }
                                     }
+                                } else {
+                                    println!("Failed to send HELLO to {}", peer_addr);
+                                    stdout().flush().unwrap();
                                 }
                             }
                             Err(e) => {
@@ -188,6 +198,9 @@ impl P2PNetwork {
         let message = format!("HELLO from {}", stream.local_addr().unwrap());
         if let Ok(mut writer) = stream.try_clone() {
             writer.write_all(message.as_bytes()).unwrap();
+            writer.flush().unwrap(); // Ensure HELLO is sent
+            println!("Sent HELLO to incoming {}", peer_addr);
+            stdout().flush().unwrap();
         }
 
         while let Ok(bytes_read) = reader.read_line(&mut buffer) {
@@ -195,6 +208,8 @@ impl P2PNetwork {
                 break;
             }
             let message = buffer.trim();
+            println!("Received from {}: {}", peer_addr, message);
+            stdout().flush().unwrap();
             if !message.starts_with("HELLO") {
                 println!("\r[{}] {}\n> ", peer_addr, message);
                 stdout().flush().unwrap();
@@ -238,7 +253,7 @@ impl P2PNetwork {
         while !*connected {
             println!("Waiting for peer {} to connect...", self.peer_addr);
             stdout().flush().unwrap();
-            connected = cvar.wait_timeout(connected, Duration::from_secs(1)).unwrap().0; // Periodic check
+            connected = cvar.wait_timeout(connected, Duration::from_secs(1)).unwrap().0;
             if *connected {
                 println!("Peer {} connected!", self.peer_addr);
                 stdout().flush().unwrap();
