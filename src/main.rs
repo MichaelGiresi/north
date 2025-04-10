@@ -133,7 +133,7 @@ impl P2PNetwork {
                                         Ok(bytes_read) if bytes_read > 0 => {
                                             if buffer.trim().starts_with("HELLO") {
                                                 discovery_peers.lock().unwrap().insert(peer_addr.clone());
-                                                println!("Connected to peer: {}", peer_addr);
+                                                println!("Successfully connected to peer: {}", peer_addr);
                                                 stdout().flush().unwrap();
                                                 let (lock, cvar) = &*discovery_connected;
                                                 let mut connected = lock.lock().unwrap();
@@ -177,6 +177,8 @@ impl P2PNetwork {
                 let mut connected_guard = lock.lock().unwrap();
                 *connected_guard = true;
                 cvar.notify_all();
+                println!("Incoming connection from expected peer: {}", peer_addr);
+                stdout().flush().unwrap();
             }
         }
         
@@ -236,10 +238,13 @@ impl P2PNetwork {
         while !*connected {
             println!("Waiting for peer {} to connect...", self.peer_addr);
             stdout().flush().unwrap();
-            connected = cvar.wait(connected).unwrap();
+            connected = cvar.wait_timeout(connected, Duration::from_secs(1)).unwrap().0; // Periodic check
+            if *connected {
+                println!("Peer {} connected!", self.peer_addr);
+                stdout().flush().unwrap();
+                break;
+            }
         }
-        println!("Peer {} connected!", self.peer_addr);
-        stdout().flush().unwrap();
     }
 }
 
