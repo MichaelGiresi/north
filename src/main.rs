@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 use std::collections::HashSet;
 use std::env;
+use std::process::Command;
 use igd::{PortMappingProtocol, SearchOptions};
 use if_addrs;
 use hostname;
@@ -39,14 +40,16 @@ impl P2PNetwork {
             .map_err(|_| "Invalid port number".to_string())?;
         let bind_addr = format!("0.0.0.0:{}", port);
 
+        // Configure firewall
+        configure_firewall(port);
+
         let local_ip = get_local_ip().unwrap_or_else(|| {
             println!("Failed to determine local IP, falling back to 0.0.0.0");
             Ipv4Addr::new(0, 0, 0, 0)
         });
         println!("Using local IP for UPnP: {}", local_ip);
 
-        // Attempt UPnP only if it’s likely to work (e.g., not on a VPS)
-        if !self.local_addr.contains("srv787206") {  // Rough check for VPS
+        if !self.local_addr.contains("srv787206") {
             match igd::search_gateway(SearchOptions::default()) {
                 Ok(gateway) => {
                     let local_addr = SocketAddrV4::new(local_ip, port);
@@ -72,7 +75,7 @@ impl P2PNetwork {
         let peers = Arc::clone(&self.peers);
         let running = Arc::clone(&self.running);
         let connected = Arc::clone(&self.connected);
-        let peer_addr = self.peer_addr.clone();  // Clone for listener thread
+        let peer_addr = self.peer_addr.clone();
 
         let listener_handle = thread::spawn(move || {
             for stream in listener.incoming() {
@@ -213,6 +216,59 @@ fn get_local_ip() -> Option<Ipv4Addr> {
         }
     }
     None
+}
+
+fn configure_firewall(port: u16) {
+    let os = env::consts::OS;
+    match os {
+        "windows" => {
+            // Windows Defender Firewall
+            let rule_name = "North P2P Network";
+            let status = Command::new("netsh")
+                .args(&[
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    &format!("name={}", rule_name),
+                    "dir=in",
+                    "action=allow",
+                    &format!("protocol=TCP"),
+                    &format!("localport={}", port),
+                ])
+                .status();
+
+            match status {
+                Ok(status) if status.success() => println!("Added Windows Firewall rule for port {}", port),
+                _ => println!(
+                    "Failed to add Windows Firewall rule. Run as admin: netsh advfirewall firewall add rule name=\"{}\" dir=in action=allow protocol=TCP localport={}",
+                    rule_name, port
+                ),
+            }
+        }
+        "linux" => {
+            // Check for ufw
+            if Command::new("ufw").arg("status").output().is_ok() {
+                let status = Command::new("ufw")
+                    .args(&["allow", &format!("{}/tcp", port)])
+                    .status();
+
+                match status {
+                    Ok(status) if status.success() => println!("Added ufw rule for port {}", port),
+                    _ => println!(
+                        "Failed to add ufw rule. Run as root: ufw allow {}/tcp",
+                        port
+                    ),
+                }
+            } else if Command::new("iptables").arg("-L").output().is_ok() {
+                // Fallback to iptables (less common on modern systems)
+                println!("iptables detected. Manual configuration required: iptables -A INPUT -p tcp --dport {} -j ACCEPT", port);
+            } else {
+                println!("No known firewall detected. Ensure port {} is open manually.", port);
+            }
+        }
+        _ => println!("Unsupported OS: {}. Manually open port {} in your firewall.", os, port),
+    }
 }
 
 fn determine_node_config() -> (String, String) {
