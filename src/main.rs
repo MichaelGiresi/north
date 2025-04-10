@@ -40,7 +40,6 @@ impl P2PNetwork {
             .map_err(|_| "Invalid port number".to_string())?;
         let bind_addr = format!("0.0.0.0:{}", port);
 
-        // Configure firewall
         configure_firewall(port);
 
         let local_ip = get_local_ip().unwrap_or_else(|| {
@@ -115,19 +114,24 @@ impl P2PNetwork {
                                 if stream.write_all(message.as_bytes()).is_ok() {
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
-                                    if reader.read_line(&mut buffer).is_ok() && buffer.trim().starts_with("HELLO") {
-                                        discovery_peers.lock().unwrap().insert(peer_addr.clone());
-                                        println!("Connected to peer: {}", peer_addr);
-                                        let (lock, cvar) = &*discovery_connected;
-                                        let mut connected = lock.lock().unwrap();
-                                        *connected = true;
-                                        cvar.notify_all();
-                                    } else {
-                                        println!("Peer {} responded but isn't a valid node", peer_addr);
+                                    match reader.read_line(&mut buffer) {
+                                        Ok(bytes_read) if bytes_read > 0 => {
+                                            if buffer.trim().starts_with("HELLO") {
+                                                discovery_peers.lock().unwrap().insert(peer_addr.clone());
+                                                println!("Connected to peer: {}", peer_addr);
+                                                let (lock, cvar) = &*discovery_connected;
+                                                let mut connected = lock.lock().unwrap();
+                                                *connected = true;
+                                                cvar.notify_all();
+                                            } else {
+                                                println!("Peer {} sent invalid response: {}", peer_addr, buffer.trim());
+                                            }
+                                        }
+                                        _ => println!("No response from peer {}", peer_addr),
                                     }
                                 }
                             }
-                            Err(_) => {}
+                            Err(_) => {} // Silent retry
                         }
                     }
                 }
@@ -222,7 +226,6 @@ fn configure_firewall(port: u16) {
     let os = env::consts::OS;
     match os {
         "windows" => {
-            // Windows Defender Firewall
             let rule_name = "North P2P Network";
             let status = Command::new("netsh")
                 .args(&[
@@ -247,7 +250,6 @@ fn configure_firewall(port: u16) {
             }
         }
         "linux" => {
-            // Check for ufw
             if Command::new("ufw").arg("status").output().is_ok() {
                 let status = Command::new("ufw")
                     .args(&["allow", &format!("{}/tcp", port)])
@@ -261,7 +263,6 @@ fn configure_firewall(port: u16) {
                     ),
                 }
             } else if Command::new("iptables").arg("-L").output().is_ok() {
-                // Fallback to iptables (less common on modern systems)
                 println!("iptables detected. Manual configuration required: iptables -A INPUT -p tcp --dport {} -j ACCEPT", port);
             } else {
                 println!("No known firewall detected. Ensure port {} is open manually.", port);
