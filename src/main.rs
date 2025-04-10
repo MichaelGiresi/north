@@ -212,7 +212,7 @@ impl P2PNetwork {
             stdout().flush().unwrap();
         }
 
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        // Keep connection open for messages
         while let Ok(bytes_read) = reader.read_line(&mut buffer) {
             if bytes_read == 0 {
                 break;
@@ -241,29 +241,28 @@ impl P2PNetwork {
     }
 
     fn send_message(&self, message: &str) {
-        let peers = self.peers.lock().unwrap().clone();
-        for peer_addr in peers {
-            println!("Attempting to send message '{}' to {}", message, peer_addr);
-            stdout().flush().unwrap();
-            match TcpStream::connect(&peer_addr) {
-                Ok(mut stream) => {
-                    let full_message = format!("{}\n", message);
-                    match stream.write_all(full_message.as_bytes()) {
-                        Ok(_) => {
-                            stream.flush().unwrap();
-                            println!("Successfully sent message '{}' to {}", message, peer_addr);
-                            stdout().flush().unwrap();
-                        }
-                        Err(e) => {
-                            println!("Failed to send message '{}' to {}: {}", message, peer_addr, e);
-                            stdout().flush().unwrap();
-                        }
+        println!("Attempting to send message '{}' to {}", message, self.peer_addr);
+        stdout().flush().unwrap();
+        match TcpStream::connect(&self.peer_addr) {
+            Ok(mut stream) => {
+                println!("Connected to {} for sending message", self.peer_addr);
+                stdout().flush().unwrap();
+                let full_message = format!("{}\n", message);
+                match stream.write_all(full_message.as_bytes()) {
+                    Ok(_) => {
+                        stream.flush().unwrap();
+                        println!("Successfully sent message '{}' to {}", message, self.peer_addr);
+                        stdout().flush().unwrap();
+                    }
+                    Err(e) => {
+                        println!("Failed to send message '{}' to {}: {}", message, self.peer_addr, e);
+                        stdout().flush().unwrap();
                     }
                 }
-                Err(e) => {
-                    println!("Failed to connect to {} for message '{}': {}", peer_addr, message, e);
-                    stdout().flush().unwrap();
-                }
+            }
+            Err(e) => {
+                println!("Failed to connect to {} for message '{}': {}", self.peer_addr, message, e);
+                stdout().flush().unwrap();
             }
         }
     }
