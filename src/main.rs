@@ -283,6 +283,54 @@ impl P2PNetwork {
             }
         }
     }
+
+    fn chat_mode(&self) {
+        println!("Entering chat mode with {}", self.peer_addr);
+        stdout().flush().unwrap();
+        print_prompt();
+        loop {
+            let mut message = String::new();
+            io::stdin().read_line(&mut message).expect("Failed to read message");
+            let message = message.trim();
+            if message.eq_ignore_ascii_case("exit") {
+                println!("Exiting chat mode");
+                stdout().flush().unwrap();
+                break;
+            }
+            if !message.is_empty() {
+                self.send_message(message);
+                print_prompt();
+            }
+        }
+    }
+
+    fn run_menu(&self) {
+        loop {
+            println!("Connected to {}. Choose an option:", self.peer_addr);
+            println!("1. Chat");
+            println!("2. Disconnect");
+            stdout().flush().unwrap();
+            print_prompt();
+
+            let mut choice = String::new();
+            io::stdin().read_line(&mut choice).expect("Failed to read choice");
+            let choice = choice.trim();
+
+            match choice {
+                "1" => self.chat_mode(),
+                "2" => {
+                    println!("Disconnecting...");
+                    stdout().flush().unwrap();
+                    self.shutdown();
+                    break;
+                }
+                _ => {
+                    println!("Invalid choice. Enter 1 or 2.");
+                    stdout().flush().unwrap();
+                }
+            }
+        }
+    }
 }
 
 fn print_prompt() {
@@ -433,33 +481,9 @@ fn main() {
     };
 
     network.wait_for_connection();
+    network.run_menu();
 
-    let network_clone = Arc::new(network);
-    let sender_network = Arc::clone(&network_clone);
-    
-    let input_handle = thread::spawn(move || {
-        println!("Type messages to send (or 'quit' to exit):");
-        stdout().flush().unwrap();
-        print_prompt();
-        
-        loop {
-            let mut message = String::new();
-            io::stdin().read_line(&mut message).expect("Failed to read message");
-            let message = message.trim();
-            
-            if message.eq_ignore_ascii_case("quit") {
-                break;
-            }
-            
-            if !message.is_empty() {
-                sender_network.send_message(message);
-                print_prompt();
-            }
-        }
-    });
-
-    input_handle.join().expect("Input thread panicked");
-    network_clone.shutdown();
+    network.shutdown();
     listener_handle.join().expect("Listener thread panicked");
     discovery_handle.join().expect("Discovery thread panicked");
     println!("Shutdown complete");
