@@ -129,11 +129,12 @@ impl P2PNetwork {
                                 stdout().flush().unwrap();
                                 let message = format!("HELLO from {}", local_addr);
                                 if stream.write_all(message.as_bytes()).is_ok() {
-                                    stream.flush().unwrap(); // Ensure message is sent
+                                    stream.flush().unwrap();
                                     println!("Sent HELLO to {}", peer_addr);
                                     stdout().flush().unwrap();
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
+                                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
                                     match reader.read_line(&mut buffer) {
                                         Ok(bytes_read) if bytes_read > 0 => {
                                             println!("Received response from {}: {}", peer_addr, buffer.trim());
@@ -152,7 +153,7 @@ impl P2PNetwork {
                                             }
                                         }
                                         _ => {
-                                            println!("No response from peer {}", peer_addr);
+                                            println!("No response from peer {} within timeout", peer_addr);
                                             stdout().flush().unwrap();
                                         }
                                     }
@@ -179,15 +180,17 @@ impl P2PNetwork {
 
     fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, connected: Arc<(Mutex<bool>, Condvar)>, expected_peer: &str) {
         let peer_addr = stream.peer_addr().unwrap().to_string();
+        let peer_ip = peer_addr.split(':').next().unwrap(); // Extract IP only
+        let expected_ip = expected_peer.split(':').next().unwrap();
         {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.insert(peer_addr.clone());
-            if peer_addr == expected_peer {
+            if peer_ip == expected_ip {  // Match IP only
                 let (lock, cvar) = &*connected;
                 let mut connected_guard = lock.lock().unwrap();
                 *connected_guard = true;
                 cvar.notify_all();
-                println!("Incoming connection from expected peer: {}", peer_addr);
+                println!("Incoming connection from peer IP: {}", peer_addr);
                 stdout().flush().unwrap();
             }
         }
@@ -198,11 +201,12 @@ impl P2PNetwork {
         let message = format!("HELLO from {}", stream.local_addr().unwrap());
         if let Ok(mut writer) = stream.try_clone() {
             writer.write_all(message.as_bytes()).unwrap();
-            writer.flush().unwrap(); // Ensure HELLO is sent
+            writer.flush().unwrap();
             println!("Sent HELLO to incoming {}", peer_addr);
             stdout().flush().unwrap();
         }
 
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         while let Ok(bytes_read) = reader.read_line(&mut buffer) {
             if bytes_read == 0 {
                 break;
@@ -219,7 +223,7 @@ impl P2PNetwork {
         {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.remove(&peer_addr);
-            if peer_addr == expected_peer {
+            if peer_ip == expected_ip {
                 let (lock, cvar) = &*connected;
                 let mut connected_guard = lock.lock().unwrap();
                 *connected_guard = false;
