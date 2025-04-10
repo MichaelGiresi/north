@@ -16,7 +16,7 @@ struct P2PNetwork {
     local_addr: String,
     peer_addr: String,
     running: Arc<Mutex<bool>>,
-    connected: Arc<Mutex<bool>>, // Reintroduced for reliable connection
+    connected: Arc<Mutex<bool>>,
 }
 
 impl P2PNetwork {
@@ -150,6 +150,9 @@ impl P2PNetwork {
             buffer.clear();
         }
         peers.lock().unwrap().remove(&peer_addr);
+        if peers.lock().unwrap().is_empty() {
+            *connected.lock().unwrap() = false;
+        }
     }
 
     fn send_message(&self, message: &str) {
