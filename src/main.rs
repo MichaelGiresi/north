@@ -204,7 +204,7 @@ impl P2PNetwork {
         let mut reader = BufReader::new(&stream);
         let mut buffer = String::new();
         
-        let message = format!("HELLO from {}", expected_peer); // Use public address
+        let message = format!("HELLO from {}", expected_peer);
         if let Ok(mut writer) = stream.try_clone() {
             writer.write_all(message.as_bytes()).unwrap();
             writer.flush().unwrap();
@@ -243,10 +243,25 @@ impl P2PNetwork {
     fn send_message(&self, message: &str) {
         let peers = self.peers.lock().unwrap().clone();
         for peer_addr in peers {
-            if let Ok(mut stream) = TcpStream::connect(&peer_addr) {
-                let full_message = format!("{}\n", message);
-                if let Err(e) = stream.write_all(full_message.as_bytes()) {
-                    println!("Failed to send to {}: {}", peer_addr, e);
+            println!("Attempting to send message '{}' to {}", message, peer_addr);
+            stdout().flush().unwrap();
+            match TcpStream::connect(&peer_addr) {
+                Ok(mut stream) => {
+                    let full_message = format!("{}\n", message);
+                    match stream.write_all(full_message.as_bytes()) {
+                        Ok(_) => {
+                            stream.flush().unwrap();
+                            println!("Successfully sent message '{}' to {}", message, peer_addr);
+                            stdout().flush().unwrap();
+                        }
+                        Err(e) => {
+                            println!("Failed to send message '{}' to {}: {}", message, peer_addr, e);
+                            stdout().flush().unwrap();
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Failed to connect to {} for message '{}': {}", peer_addr, message, e);
                     stdout().flush().unwrap();
                 }
             }
