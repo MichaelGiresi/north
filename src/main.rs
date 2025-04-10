@@ -16,6 +16,7 @@ struct P2PNetwork {
     local_addr: String,
     peer_addr: String,
     running: Arc<Mutex<bool>>,
+    connected: Arc<Mutex<bool>>, // Reintroduced for reliable connection
 }
 
 impl P2PNetwork {
@@ -30,6 +31,7 @@ impl P2PNetwork {
             local_addr: local_addr.to_string(),
             peer_addr: peer_addr.to_string(),
             running: Arc::new(Mutex::new(true)),
+            connected: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -53,6 +55,7 @@ impl P2PNetwork {
 
         let peers = Arc::clone(&self.peers);
         let running = Arc::clone(&self.running);
+        let connected = Arc::clone(&self.connected);
         let peer_addr = self.peer_addr.clone();
 
         let listener_handle = thread::spawn(move || {
@@ -63,9 +66,10 @@ impl P2PNetwork {
                 match stream {
                     Ok(stream) => {
                         let peers_clone = Arc::clone(&peers);
+                        let connected_clone = Arc::clone(&connected);
                         let peer_addr_clone = peer_addr.clone();
                         thread::spawn(move || {
-                            Self::handle_connection(stream, peers_clone, &peer_addr_clone);
+                            Self::handle_connection(stream, peers_clone, connected_clone, &peer_addr_clone);
                         });
                     }
                     Err(_) => {}
@@ -76,12 +80,13 @@ impl P2PNetwork {
         let discovery_peers = Arc::clone(&self.peers);
         let discovery_potential = Arc::clone(&self.potential_peers);
         let discovery_running = Arc::clone(&self.running);
+        let discovery_connected = Arc::clone(&self.connected);
         let local_addr = self.local_addr.clone();
         let peer_addr = self.peer_addr.clone();
 
         let discovery_handle = thread::spawn(move || {
             while *discovery_running.lock().unwrap() {
-                if !discovery_peers.lock().unwrap().is_empty() {
+                if *discovery_connected.lock().unwrap() {
                     break;
                 }
                 let potential = discovery_potential.lock().unwrap().clone();
@@ -93,8 +98,10 @@ impl P2PNetwork {
                                 stream.flush().unwrap();
                                 let mut reader = BufReader::new(&stream);
                                 let mut buffer = String::new();
+                                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
                                 if reader.read_line(&mut buffer).is_ok() && buffer.trim().starts_with("HELLO") {
                                     discovery_peers.lock().unwrap().insert(peer_addr.clone());
+                                    *discovery_connected.lock().unwrap() = true;
                                 }
                             }
                         }
@@ -107,16 +114,17 @@ impl P2PNetwork {
         Ok((listener_handle, discovery_handle))
     }
 
-    fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, expected_peer: &str) {
+    fn handle_connection(stream: TcpStream, peers: Arc<Mutex<HashSet<String>>>, connected: Arc<Mutex<bool>>, expected_peer: &str) {
         let peer_addr = stream.peer_addr().unwrap().to_string();
         let peer_ip = peer_addr.split(':').next().unwrap();
         let expected_ip = expected_peer.split(':').next().unwrap();
         {
             let mut peers_guard = peers.lock().unwrap();
             peers_guard.insert(peer_addr.clone());
-            if peer_ip == expected_ip && peers_guard.len() == 1 {
+            if peer_ip == expected_ip && !*connected.lock().unwrap() {
                 println!("Connected to your friend!");
                 stdout().flush().unwrap();
+                *connected.lock().unwrap() = true;
             }
         }
         
@@ -160,7 +168,7 @@ impl P2PNetwork {
     fn wait_for_connection(&self) {
         println!("Connecting to your friend...");
         stdout().flush().unwrap();
-        while self.peers.lock().unwrap().is_empty() {
+        while !*self.connected.lock().unwrap() {
             thread::sleep(Duration::from_secs(1));
         }
     }
