@@ -1,10 +1,12 @@
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, SocketAddrV4, IpAddr, Ipv4Addr};
 use std::io::{self, Write, BufReader, BufRead};
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::time::Duration;
 use std::collections::HashSet;
-use igd::{PortMappingProtocol, SearchOptions}; // Removed unused Gateway
+use std::env;
+use igd::{PortMappingProtocol, SearchOptions};
+use if_addrs;
 
 struct P2PNetwork {
     peers: Arc<Mutex<HashSet<String>>>,
@@ -34,10 +36,21 @@ impl P2PNetwork {
             .map_err(|_| "Invalid port number".to_string())?;
         let bind_addr = format!("0.0.0.0:{}", port);
 
+        // Get the local IP address for UPnP
+        let local_ip = get_local_ip().unwrap_or_else(|| {
+            println!("Failed to determine local IP, falling back to 0.0.0.0");
+            Ipv4Addr::new(0, 0, 0, 0)
+        });
+        println!("Using local IP for UPnP: {}", local_ip);
+
         // Attempt UPnP port forwarding
         match igd::search_gateway(SearchOptions::default()) {
             Ok(gateway) => {
-                let local_addr = "0.0.0.0".parse().unwrap();
+                let local_addr = SocketAddrV4::new(local_ip, port);
+                match gateway.get_external_ip() {
+                    Ok(external_ip) => println!("Requesting UPnP mapping: {} -> {}:{}", external_ip, local_ip, port),
+                    Err(e) => println!("Failed to get external IP: {}", e),
+                }
                 match gateway.add_port(PortMappingProtocol::TCP, port, local_addr, 3600, "P2P Network") {
                     Ok(()) => println!("UPnP port forwarding set up for port {}", port),
                     Err(e) => println!("Failed to set up UPnP: {}. Manual port forwarding may be required.", e),
@@ -88,7 +101,6 @@ impl P2PNetwork {
                             Ok(mut stream) => {
                                 let message = format!("HELLO from {}", local_addr);
                                 if stream.write_all(message.as_bytes()).is_ok() {
-                                    // Verify peer response
                                     let mut reader = BufReader::new(&stream);
                                     let mut buffer = String::new();
                                     if reader.read_line(&mut buffer).is_ok() && buffer.trim().starts_with("HELLO") {
@@ -103,7 +115,7 @@ impl P2PNetwork {
                                     }
                                 }
                             }
-                            Err(_) => {} // Silent retry on connection failure
+                            Err(_) => {}
                         }
                     }
                 }
@@ -129,7 +141,6 @@ impl P2PNetwork {
         let mut reader = BufReader::new(&stream);
         let mut buffer = String::new();
         
-        // Send HELLO message to incoming connection
         let message = format!("HELLO from {}", stream.local_addr().unwrap());
         if let Ok(mut writer) = stream.try_clone() {
             writer.write_all(message.as_bytes()).unwrap();
@@ -181,26 +192,33 @@ fn print_prompt() {
     io::stdout().flush().unwrap();
 }
 
+fn get_local_ip() -> Option<Ipv4Addr> {
+    for interface in if_addrs::get_if_addrs().unwrap_or_default() {
+        if !interface.is_loopback() && interface.ip().is_ipv4() {
+            if let IpAddr::V4(ipv4) = interface.ip() {
+                return Some(ipv4);
+            }
+        }
+    }
+    None
+}
+
+const NODE_A: &str = "47.17.52.8:8000";  // Windows machine
+const NODE_B: &str = "82.25.86.57:8000"; // Server
+
 fn main() {
-    println!("Enter your public address (public_IP:port, e.g., 47.17.52.8:8000):");
-    let mut local_addr = String::new();
-    io::stdin().read_line(&mut local_addr).expect("Failed to read address");
-    let local_addr = local_addr.trim();
+    let args: Vec<String> = env::args().collect();
+    let (local_addr, peer_addr) = match args.get(1).map(|s| s.as_str()) {
+        Some("node-a") => (NODE_A, NODE_B),
+        Some("node-b") => (NODE_B, NODE_A),
+        _ => {
+            println!("Usage: cargo run -- <node-a|node-b>");
+            println!("Defaulting to node-a ({}) with peer node-b ({}).", NODE_A, NODE_B);
+            (NODE_A, NODE_B)
+        }
+    };
 
-    if !local_addr.contains(':') {
-        println!("Error: Address must include a port (e.g., 82.25.86.57:8000)");
-        return;
-    }
-    let parts: Vec<&str> = local_addr.split(':').collect();
-    if parts.len() != 2 || parts[1].parse::<u16>().is_err() {
-        println!("Error: Invalid format or port number. Use IP:port (e.g., 82.25.86.57:8000)");
-        return;
-    }
-
-    println!("Enter initial peer's public address (public_IP:port, e.g., 174.193.21.86:8000):");
-    let mut peer_addr = String::new();
-    io::stdin().read_line(&mut peer_addr).expect("Failed to read peer address");
-    let peer_addr = peer_addr.trim();
+    println!("Running as {} with peer {}", local_addr, peer_addr);
 
     let network = P2PNetwork::new(local_addr, peer_addr);
     let (listener_handle, discovery_handle) = match network.start() {
